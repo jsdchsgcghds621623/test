@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Custom Stream Player</title>
+  <style>
+    body {
+      font-family: Arial;
+      background: #111;
+      color: white;
+      text-align: center;
+      padding: 20px;
+    }
+
+    input, button {
+      padding: 10px;
+      margin: 5px;
+      width: 200px;
+    }
+
+    video {
+      width: 80%;
+      margin-top: 20px;
+      background: black;
+    }
+
+    .row {
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>🎬 My Custom Player</h2>
+
+<div class="row">
+  <input id="imdb" placeholder="IMDb ID (tt...)" />
+</div>
+
+<div class="row">
+  <input id="tmdb" placeholder="TMDB ID (for series)" />
+</div>
+
+<div class="row">
+  <input id="season" placeholder="Season" />
+  <input id="episode" placeholder="Episode" />
+</div>
+
+<button onclick="loadMovie()">Load Movie</button>
+<button onclick="loadSeries()">Load Series</button>
+
+<video id="video" controls></video>
+
+<script>
+const API = "http://localhost:3000";
+const DECRYPT_KEY = "Test12@@";
+
+let currentStreams = null;
+
+// ── Load Movie ─────────────────────────────
+async function loadMovie() {
+  const imdb = document.getElementById("imdb").value;
+
+  const res = await fetch(`${API}/movie?imdb=${imdb}`);
+  const data = await res.json();
+
+  currentStreams = data.streams;
+
+  playFirstStream();
+}
+
+// ── Load Series ────────────────────────────
+async function loadSeries() {
+  const tmdb = document.getElementById("tmdb").value;
+  const season = document.getElementById("season").value;
+  const episode = document.getElementById("episode").value;
+
+  const res = await fetch(
+    `${API}/series?tmdb=${tmdb}&season=${season}&episode=${episode}`
+  );
+
+  const data = await res.json();
+
+  currentStreams = data.streams;
+
+  playFirstStream();
+}
+
+// ── Decrypt + Play ─────────────────────────
+async function decrypt(token) {
+  const res = await fetch(`${API}/decrypt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token,
+      apiKey: DECRYPT_KEY
+    })
+  });
+
+  const data = await res.json();
+  return data.url;
+}
+
+// ── Play first available stream ────────────
+async function playFirstStream() {
+  if (!currentStreams) return;
+
+  const firstKey = Object.keys(currentStreams)[0];
+  const token = currentStreams[firstKey].token;
+
+  const url = await decrypt(token);
+
+  const video = document.getElementById("video");
+  video.src = url;
+  video.play();
+}
+</script>
+
+</body>
+</html>

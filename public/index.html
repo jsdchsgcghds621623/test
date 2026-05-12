@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MultiMovies Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0a0a0f; --surface: #12121a; --surface2: #1a1a26;
+      --border: #2a2a3d; --accent: #e63946; --text: #e8e8f0; --muted: #6b6b8a;
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+    header { width: 100%; padding: 18px 32px; display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--surface); }
+    header .logo { font-family: 'Bebas Neue', sans-serif; font-size: 28px; letter-spacing: 2px; color: var(--accent); }
+    header .logo span { color: var(--text); }
+    .search-bar { display: flex; gap: 10px; padding: 24px 32px 0; width: 100%; max-width: 900px; }
+    .search-bar input { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 11px 16px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; outline: none; transition: border-color 0.2s; }
+    .search-bar input:focus { border-color: var(--accent); }
+    .search-bar input::placeholder { color: var(--muted); }
+    .search-bar button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 11px 22px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s, transform 0.1s; }
+    .search-bar button:hover { opacity: 0.88; transform: translateY(-1px); }
+    .main { width: 100%; max-width: 900px; padding: 24px 32px 48px; display: flex; flex-direction: column; gap: 16px; }
+    .player-switcher { display: flex; gap: 8px; align-items: center; }
+    .switcher-label { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-right: 4px; }
+    .player-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 20px; color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.18s; display: flex; align-items: center; gap: 7px; }
+    .player-btn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background 0.18s; }
+    .player-btn:hover { border-color: var(--accent); color: var(--text); }
+    .player-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 0 18px #e6394655; }
+    .player-btn.active .dot { background: #fff; }
+    .video-wrap { width: 100%; aspect-ratio: 16/9; background: #07070d; border-radius: 12px; border: 1px solid var(--border); overflow: hidden; position: relative; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .video-wrap:hover .play-ring { border-color: var(--accent); transform: scale(1.08); }
+    .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--muted); font-size: 14px; z-index: 1; text-align: center; padding: 20px; }
+    .play-ring { width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center; transition: border-color 0.2s, transform 0.2s; background: rgba(230,57,70,0.08); }
+    .play-ring svg { fill: var(--accent); }
+    .play-hint { font-size: 12px; color: var(--muted); letter-spacing: 0.5px; }
+    .video-wrap.loaded { background: linear-gradient(135deg, #0d0d18 0%, #1a0a10 100%); }
+    .now-playing { display: none; flex-direction: column; align-items: center; gap: 10px; z-index: 1; }
+    .video-wrap.loaded .placeholder { display: none; }
+    .video-wrap.loaded .now-playing { display: flex; }
+    .np-badge { background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; padding: 4px 12px; border-radius: 20px; }
+    .np-id { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 2px; }
+    .np-sub { font-size: 12px; color: var(--muted); }
+    .open-btn { margin-top: 6px; background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; padding: 8px 20px; font-family: 'DM Sans', sans-serif; font-size: 13px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .open-btn:hover { background: var(--accent); color: #fff; }
+    .info-bar { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+    .info-bar .media-id { font-family: 'Bebas Neue', sans-serif; letter-spacing: 1px; font-size: 14px; color: var(--text); }
+    .provider-tag { padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); font-size: 11px; }
+    .toast { display: none; background: #2d1218; border: 1px solid #7c2030; color: #ff8fa3; border-radius: 8px; padding: 10px 16px; font-size: 13px; }
+    .toast.show { display: block; }
+    .popup-warn { display: none; background: #1a1506; border: 1px solid #7c6a10; color: #ffd166; border-radius: 8px; padding: 12px 16px; font-size: 13px; line-height: 1.6; }
+    .popup-warn.show { display: block; }
+    .popup-warn a { color: #ffd166; }
+    @media (max-width: 600px) { header { padding: 14px 16px; } .search-bar, .main { padding-left: 16px; padding-right: 16px; } .player-btn { padding: 7px 14px; font-size: 12px; } }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Multi<span>Movies</span></div>
+</header>
+
+<div class="search-bar">
+  <input type="text" id="mediaInput" placeholder="Enter media ID — e.g. 8cx3iv or movie_tt0468569" value="8cx3iv" />
+  <button onclick="loadMedia()">&#9654; Play</button>
+</div>
+
+<div class="main">
+
+  <div class="player-switcher">
+    <span class="switcher-label">Server</span>
+    <button class="player-btn active" data-player="1" onclick="switchPlayer(1)"><span class="dot"></span> Player 1</button>
+    <button class="player-btn" data-player="2" onclick="switchPlayer(2)"><span class="dot"></span> Player 2</button>
+    <button class="player-btn" data-player="3" onclick="switchPlayer(3)"><span class="dot"></span> Player 3</button>
+  </div>
+
+  <div class="video-wrap" id="videoWrap" onclick="openPlayer()">
+    <div class="placeholder" id="placeholder">
+      <div class="play-ring">
+        <svg width="28" height="28" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+      <span>Enter a media ID and press Play</span>
+      <span class="play-hint">Player opens in a new window</span>
+    </div>
+    <div class="now-playing" id="nowPlaying">
+      <div class="np-badge">Now Playing</div>
+      <div class="np-id" id="npId"></div>
+      <div class="np-sub" id="npSub"></div>
+      <button class="open-btn" onclick="openPlayer(); event.stopPropagation();">&#8599; Open Player</button>
+    </div>
+  </div>
+
+  <div class="info-bar">
+    <span class="media-id" id="mediaLabel">—</span>
+    <span class="provider-tag" id="providerLabel">No server selected</span>
+  </div>
+
+  <div class="popup-warn" id="popupWarn">
+    &#9888; <strong>Popup blocked.</strong> Your browser blocked the player window.
+    Please allow popups for this site, then <a href="#" onclick="openPlayer(); return false;">click here to retry</a>.
+  </div>
+
+  <div class="toast" id="errorToast"></div>
+
+</div>
+
+<script>
+  const PROVIDERS = {
+    1: { name: "P2PPlay", base: "https://multimovies.p2pplay.pro/#" },
+    2: { name: "UNS",     base: "https://server1.uns.bio/#" },
+    3: { name: "RPMHub",  base: "https://multimovies.rpmhub.site/#" },
+  };
+
+  let currentPlayer = 1;
+  let currentMediaId = "";
+  let playerWin = null;
+
+  function getUrl() {
+    return PROVIDERS[currentPlayer].base + encodeURIComponent(currentMediaId);
+  }
+
+  function switchPlayer(num) {
+    currentPlayer = num;
+    document.querySelectorAll(".player-btn").forEach(btn => {
+      btn.classList.toggle("active", parseInt(btn.dataset.player) === num);
+    });
+    if (currentMediaId) {
+      updateInfoBar();
+      if (playerWin && !playerWin.closed) {
+        playerWin.location.href = getUrl();
+      }
+    }
+  }
+
+  function loadMedia() {
+    const id = document.getElementById("mediaInput").value.trim();
+    if (!id) { showError("Please enter a media ID."); return; }
+    currentMediaId = id;
+    document.getElementById("popupWarn").classList.remove("show");
+    document.getElementById("errorToast").classList.remove("show");
+    document.getElementById("videoWrap").classList.add("loaded");
+    document.getElementById("npId").textContent = id;
+    updateInfoBar();
+    openPlayer();
+  }
+
+  function openPlayer() {
+    if (!currentMediaId) { showError("Enter a media ID first."); return; }
+    const w = 1280, h = 720;
+    const left = Math.max(0, (screen.width - w) / 2);
+    const top  = Math.max(0, (screen.height - h) / 2);
+    playerWin = window.open(
+      getUrl(),
+      "multimovies_player",
+      `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=no,toolbar=no,menubar=no,location=no`
+    );
+    if (!playerWin || playerWin.closed || typeof playerWin.closed === "undefined") {
+      document.getElementById("popupWarn").classList.add("show");
+    } else {
+      document.getElementById("popupWarn").classList.remove("show");
+      playerWin.focus();
+    }
+  }
+
+  function updateInfoBar() {
+    document.getElementById("mediaLabel").textContent = currentMediaId;
+    document.getElementById("npSub").textContent = "Server " + currentPlayer + " \u00b7 " + PROVIDERS[currentPlayer].name;
+    document.getElementById("providerLabel").textContent = "Server " + currentPlayer + " \u00b7 " + PROVIDERS[currentPlayer].name;
+  }
+
+  function showError(msg) {
+    const t = document.getElementById("errorToast");
+    t.textContent = "⚠ " + msg;
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 5000);
+  }
+
+  document.getElementById("mediaInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") loadMedia();
+  });
+</script>
+</body>
+</html>
