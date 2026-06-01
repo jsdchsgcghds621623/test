@@ -579,18 +579,37 @@
     let offset = 0;
     const limit = 50;
     let pollTimer = null;
+    let refreshSeq = 0;
+    let refreshAbort = null;
 
     const $ = (sel) => document.querySelector(sel);
+
+    function esc(value) {
+      if (value == null) return "";
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
 
     function headers() {
       return { "X-Admin-Secret": secret };
     }
 
-    async function api(path) {
-      const res = await fetch(path, { headers: headers() });
+    async function api(path, signal) {
+      const res = await fetch(path, { headers: headers(), signal });
       if (res.status === 401) {
         logout();
         throw new Error("Unauthorized");
+      }
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body.error) msg = body.error;
+        } catch { /* non-JSON body */ }
+        throw new Error(msg);
       }
       return res.json();
     }
@@ -599,24 +618,49 @@
       secret = "";
       sessionStorage.removeItem("adminSecret");
       clearInterval(pollTimer);
+      pollTimer = null;
+      refreshAbort?.abort();
       $("#dashboard").style.display = "none";
       $("#login-screen").style.display = "flex";
     }
 
+    function startPolling() {
+      clearInterval(pollTimer);
+      pollTimer = setInterval(refresh, 8000);
+    }
+
+    async function enterDashboard() {
+      $("#login-screen").style.display = "none";
+      $("#dashboard").style.display = "block";
+      $("#login-error").style.display = "none";
+      await refresh();
+      startPolling();
+    }
+
     async function login() {
-      secret = $("#secret-input").value.trim();
+      const input = $("#secret-input").value.trim();
+      if (input) secret = input;
       if (!secret) return;
       try {
         await api("/admin/api/stats");
         sessionStorage.setItem("adminSecret", secret);
-        $("#login-screen").style.display = "none";
-        $("#dashboard").style.display = "block";
-        $("#login-error").style.display = "none";
-        await refresh();
-        pollTimer = setInterval(refresh, 5000);
+        await enterDashboard();
       } catch {
+        secret = "";
+        sessionStorage.removeItem("adminSecret");
         $("#login-error").textContent = "Invalid admin secret";
         $("#login-error").style.display = "block";
+      }
+    }
+
+    async function restoreSession() {
+      if (!secret) return;
+      try {
+        await api("/admin/api/stats");
+        await enterDashboard();
+      } catch {
+        secret = "";
+        sessionStorage.removeItem("adminSecret");
       }
     }
 
@@ -641,7 +685,8 @@
     }
 
     function renderStats(data) {
-      const c = data.counters;
+      const c = data.counters || {};
+      const hourly = Array.isArray(data.hourly) ? data.hourly : [];
       const cards = [
         { label: "Total Requests", value: c.total, cls: "accent" },
         { label: "Movies", value: c.movies, cls: "" },
@@ -660,15 +705,15 @@
         </div>
       `).join("");
 
-      const maxHour = Math.max(1, ...data.hourly.map((h) => h.count));
-      $("#hourly-chart").innerHTML = data.hourly.map((h) => `
+      const maxHour = Math.max(1, ...hourly.map((h) => h.count || 0));
+      $("#hourly-chart").innerHTML = hourly.map((h) => `
         <div class="bar-col" title="${h.count} requests at ${h.hour}:00">
-          <div class="bar" style="height:${Math.max(2, (h.count / maxHour) * 100)}px"></div>
+          <div class="bar" style="height:${Math.max(2, ((h.count || 0) / maxHour) * 100)}px"></div>
           <span class="bar-label">${h.hour}</span>
         </div>
       `).join("");
 
-      const routes = Object.entries(c.byRoute).sort((a, b) => b[1] - a[1]);
+      const routes = Object.entries(c.byRoute || {}).sort((a, b) => b[1] - a[1]);
       $("#route-list").innerHTML = routes.map(([name, count]) => `
         <li>
           <span class="name"><span class="dot" style="background:${ROUTE_COLORS[name] || "#666"}"></span>${name}</span>
@@ -676,7 +721,7 @@
         </li>
       `).join("") || "<li><span class='name'>No data</span></li>";
 
-      const providers = Object.entries(c.byProvider).sort((a, b) => b[1] - a[1]);
+      const providers = Object.entries(c.byProvider || {}).sort((a, b) => b[1] - a[1]);
       $("#provider-list").innerHTML = providers.map(([key, count]) => `
         <li>
           <span class="name"><span class="dot" style="background:${PROVIDER_COLORS[key] || "#666"}"></span>${PROVIDER_NAMES[key] || key}</span>
@@ -684,10 +729,10 @@
         </li>
       `).join("") || "<li><span class='name'>No data</span></li>";
 
-      const origins = Object.entries(c.byOrigin).sort((a, b) => b[1] - a[1]).slice(0, 15);
+      const origins = Object.entries(c.byOrigin || {}).sort((a, b) => b[1] - a[1]).slice(0, 15);
       $("#origin-list").innerHTML = origins.map(([domain, count]) => `
         <li>
-          <span class="name">${domain}</span>
+          <span class="name">${esc(domain)}</span>
           <span class="count">${count}</span>
         </li>
       `).join("") || "<li><span class='name'>No origin data yet</span></li>";
@@ -710,23 +755,25 @@
         const typeBadge = r.type === "movie" ? "badge-movie"
           : r.type === "series" ? "badge-series" : "badge-decrypt";
         const statusBadge = r.status < 400 ? "badge-ok" : "badge-err";
+        const label = esc(contentLabel(r));
+        const domain = esc(r.origin?.domain || "direct");
         const providers = (r.providers || (r.decryptedProvider ? [r.decryptedProvider] : []))
-          .map((p) => `<span class="provider-tag">${PROVIDER_NAMES[p] || p}</span>`).join("");
+          .map((p) => `<span class="provider-tag">${esc(PROVIDER_NAMES[p] || p)}</span>`).join("");
 
         return `
-          <tr class="clickable" data-id="${r.id}">
-            <td class="mono">${fmtTime(r.timestamp)}</td>
-            <td><span class="badge ${typeBadge}">${r.type}</span></td>
-            <td class="truncate" title="${contentLabel(r)}">${contentLabel(r)}</td>
-            <td class="mono">${r.route || "—"}</td>
+          <tr class="clickable" data-id="${esc(r.id)}">
+            <td class="mono">${esc(fmtTime(r.timestamp))}</td>
+            <td><span class="badge ${typeBadge}">${esc(r.type)}</span></td>
+            <td class="truncate" title="${label}">${label}</td>
+            <td class="mono">${esc(r.route || "—")}</td>
             <td><div class="provider-tags">${providers || "—"}</div></td>
-            <td class="truncate" title="${r.origin?.domain || ""}">${r.origin?.domain || "direct"}</td>
-            <td class="mono">${r.clientIp || "—"}</td>
+            <td class="truncate" title="${domain}">${domain}</td>
+            <td class="mono">${esc(r.clientIp || "—")}</td>
             <td>
-              <span class="badge ${statusBadge}">${r.status}</span>
+              <span class="badge ${statusBadge}">${esc(r.status)}</span>
               ${r.cached ? '<span class="badge badge-cache">CACHE</span>' : ""}
             </td>
-            <td class="mono">${r.durationMs}ms</td>
+            <td class="mono">${esc(r.durationMs)}ms</td>
           </tr>
         `;
       }).join("");
@@ -747,21 +794,33 @@
     }
 
     async function refresh() {
+      const seq = ++refreshSeq;
+      refreshAbort?.abort();
+      refreshAbort = new AbortController();
+      const { signal } = refreshAbort;
+
+      $("#last-refresh").textContent = "Updating…";
+
       try {
         const [stats, requests] = await Promise.all([
-          api("/admin/api/stats"),
-          api(`/admin/api/requests?${buildQuery()}`),
+          api("/admin/api/stats", signal),
+          api(`/admin/api/requests?${buildQuery()}`, signal),
         ]);
+        if (seq !== refreshSeq) return;
+
         renderStats(stats);
         renderTable(requests);
         $("#last-refresh").textContent = "Updated " + new Date().toLocaleTimeString();
       } catch (err) {
+        if (err.name === "AbortError") return;
+        if (seq !== refreshSeq) return;
         console.error(err);
+        $("#last-refresh").textContent = "Update failed — " + err.message;
       }
     }
 
     async function showDetail(id) {
-      const data = await api(`/admin/api/requests/${id}`);
+      const data = await api(`/admin/api/requests/${encodeURIComponent(id)}`);
       const fields = [
         ["ID", data.id],
         ["Timestamp", fmtTime(data.timestamp)],
@@ -788,7 +847,7 @@
       ].filter(([, v]) => v != null && v !== "" && v !== undefined);
 
       $("#modal-content").innerHTML = fields.map(([k, v]) =>
-        `<dt>${k}</dt><dd>${v}</dd>`
+        `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`
       ).join("");
       $("#modal").classList.add("open");
     }
@@ -822,7 +881,7 @@
     }
 
     if (secret) {
-      login();
+      restoreSession();
     }
   </script>
 </body>

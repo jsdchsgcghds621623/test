@@ -139,6 +139,24 @@ function trackOrigin(domain) {
     (analytics.counters.byOrigin[domain] || 0) + 1;
 }
 
+const MAX_ORIGIN_KEYS = 500;
+
+function trimOriginCounters() {
+  const entries = Object.entries(analytics.counters.byOrigin);
+  if (entries.length <= MAX_ORIGIN_KEYS) return;
+  analytics.counters.byOrigin = Object.fromEntries(
+    entries.sort((a, b) => b[1] - a[1]).slice(0, MAX_ORIGIN_KEYS)
+  );
+}
+
+function topOrigins(limit = 50) {
+  return Object.fromEntries(
+    Object.entries(analytics.counters.byOrigin)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+  );
+}
+
 function logRequest(entry) {
   analytics.counters.total += 1;
   bumpHourly("count");
@@ -165,6 +183,7 @@ function logRequest(entry) {
   }
 
   trackOrigin(entry.origin?.domain || "direct");
+  trimOriginCounters();
 
   if (entry.providers) {
     for (const p of entry.providers) {
@@ -747,7 +766,10 @@ app.get("/admin/api/stats", requireAdmin, (_req, res) => {
       : "0.0";
 
   res.json({
-    counters: analytics.counters,
+    counters: {
+      ...analytics.counters,
+      byOrigin: topOrigins(50),
+    },
     cacheHitRate: `${cacheHitRate}%`,
     uptimeMs,
     uptimeHuman: formatUptime(uptimeMs),
@@ -802,7 +824,10 @@ app.get("/admin/api/requests", requireAdmin, (req, res) => {
 
   const lim = Math.min(parseInt(limit, 10) || 100, 500);
   const off = parseInt(offset, 10) || 0;
-  const page = filtered.slice(off, off + lim);
+  const page = filtered.slice(off, off + lim).map((row) => {
+    const { userAgent, ...summary } = row;
+    return summary;
+  });
 
   res.json({
     total: filtered.length,
