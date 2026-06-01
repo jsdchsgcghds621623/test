@@ -579,8 +579,8 @@
     let offset = 0;
     const limit = 50;
     let pollTimer = null;
-    let refreshSeq = 0;
-    let refreshAbort = null;
+    let refreshInFlight = false;
+    let refreshQueued = false;
 
     const $ = (sel) => document.querySelector(sel);
 
@@ -597,8 +597,12 @@
       return { "X-Admin-Secret": secret };
     }
 
-    async function api(path, signal) {
-      const res = await fetch(path, { headers: headers(), signal });
+    async function api(path) {
+      const url = path.includes("?") ? `${path}&_=${Date.now()}` : `${path}?_=${Date.now()}`;
+      const res = await fetch(url, {
+        headers: headers(),
+        cache: "no-store",
+      });
       if (res.status === 401) {
         logout();
         throw new Error("Unauthorized");
@@ -619,14 +623,16 @@
       sessionStorage.removeItem("adminSecret");
       clearInterval(pollTimer);
       pollTimer = null;
-      refreshAbort?.abort();
       $("#dashboard").style.display = "none";
       $("#login-screen").style.display = "flex";
     }
 
     function startPolling() {
       clearInterval(pollTimer);
-      pollTimer = setInterval(refresh, 8000);
+      pollTimer = setInterval(() => refresh(), 5000);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refresh();
+      });
     }
 
     async function enterDashboard() {
@@ -739,12 +745,13 @@
     }
 
     function renderTable(data) {
-      const rows = data.requests;
-      $("#log-count").textContent = `${data.total} matching · showing ${rows.length}`;
-      $("#page-info").textContent = `Offset ${data.offset} · ${data.total} total`;
+      const rows = Array.isArray(data?.requests) ? data.requests : [];
+      const total = data?.total ?? rows.length;
+      $("#log-count").textContent = `${total} matching · showing ${rows.length}`;
+      $("#page-info").textContent = `Offset ${data?.offset ?? offset} · ${total} total`;
 
       $("#prev-btn").disabled = offset <= 0;
-      $("#next-btn").disabled = offset + limit >= data.total;
+      $("#next-btn").disabled = offset + limit >= total;
 
       if (!rows.length) {
         $("#requests-body").innerHTML = `<tr><td colspan="9" class="empty-state">No requests match your filters</td></tr>`;
@@ -794,28 +801,46 @@
     }
 
     async function refresh() {
-      const seq = ++refreshSeq;
-      refreshAbort?.abort();
-      refreshAbort = new AbortController();
-      const { signal } = refreshAbort;
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return;
+      }
 
+      refreshInFlight = true;
       $("#last-refresh").textContent = "Updating…";
 
-      try {
-        const [stats, requests] = await Promise.all([
-          api("/admin/api/stats", signal),
-          api(`/admin/api/requests?${buildQuery()}`, signal),
-        ]);
-        if (seq !== refreshSeq) return;
+      let statsErr = null;
+      let requestsErr = null;
 
-        renderStats(stats);
-        renderTable(requests);
-        $("#last-refresh").textContent = "Updated " + new Date().toLocaleTimeString();
+      try {
+        const statsP = api("/admin/api/stats")
+          .then((data) => { renderStats(data); })
+          .catch((err) => { statsErr = err; });
+
+        const requestsP = api(`/admin/api/requests?${buildQuery()}`)
+          .then((data) => { renderTable(data); })
+          .catch((err) => { requestsErr = err; });
+
+        await Promise.all([statsP, requestsP]);
+
+        if (statsErr && requestsErr) {
+          throw statsErr;
+        }
+        if (statsErr || requestsErr) {
+          const err = statsErr || requestsErr;
+          $("#last-refresh").textContent = "Partial update — " + err.message;
+        } else {
+          $("#last-refresh").textContent = "Updated " + new Date().toLocaleTimeString();
+        }
       } catch (err) {
-        if (err.name === "AbortError") return;
-        if (seq !== refreshSeq) return;
         console.error(err);
         $("#last-refresh").textContent = "Update failed — " + err.message;
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued) {
+          refreshQueued = false;
+          refresh();
+        }
       }
     }
 

@@ -758,6 +758,12 @@ app.post("/decrypt", (req, res) => {
    ADMIN ANALYTICS API
 ───────────────────────────── */
 
+app.use("/admin/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.set("Pragma", "no-cache");
+  next();
+});
+
 app.get("/admin/api/stats", requireAdmin, (_req, res) => {
   const uptimeMs = Date.now() - analytics.startedAt;
   const cacheHitRate =
