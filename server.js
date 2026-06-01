@@ -4,6 +4,11 @@ import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  enrichRequestMeta,
+  enrichRequestsBatch,
+  isTmdbConfigured,
+} from "./tmdb.js";
 
 dotenv.config();
 
@@ -200,6 +205,18 @@ function logRequest(entry) {
   analytics.requests.unshift(entry);
   if (analytics.requests.length > MAX_ANALYTICS) {
     analytics.requests.length = MAX_ANALYTICS;
+  }
+
+  if (
+    isTmdbConfigured() &&
+    ((entry.type === "movie" && entry.imdb) ||
+      (entry.type === "series" && entry.tmdb))
+  ) {
+    enrichRequestMeta(entry)
+      .then((media) => {
+        if (media && !media.error) entry.media = media;
+      })
+      .catch(() => {});
   }
 }
 
@@ -784,10 +801,11 @@ app.get("/admin/api/stats", requireAdmin, (_req, res) => {
     maxStored: MAX_ANALYTICS,
     hourly: analytics.hourly,
     providerNames: PROVIDER_NAMES,
+    tmdbConfigured: isTmdbConfigured(),
   });
 });
 
-app.get("/admin/api/requests", requireAdmin, (req, res) => {
+app.get("/admin/api/requests", requireAdmin, async (req, res) => {
   const {
     type,
     route,
@@ -824,7 +842,10 @@ app.get("/admin/api/requests", requireAdmin, (req, res) => {
         r.filename?.toLowerCase().includes(q) ||
         r.fileslug?.toLowerCase().includes(q) ||
         r.origin?.domain?.toLowerCase().includes(q) ||
-        r.clientIp?.includes(q)
+        r.clientIp?.includes(q) ||
+        r.media?.title?.toLowerCase().includes(q) ||
+        r.media?.displayTitle?.toLowerCase().includes(q) ||
+        r.media?.episode?.name?.toLowerCase().includes(q)
     );
   }
 
@@ -835,18 +856,35 @@ app.get("/admin/api/requests", requireAdmin, (req, res) => {
     return summary;
   });
 
+  const enriched = await enrichRequestsBatch(page);
+  for (const row of enriched) {
+    if (row.media && !row.media.error) {
+      const stored = analytics.requests.find((r) => r.id === row.id);
+      if (stored) stored.media = row.media;
+    }
+  }
+
   res.json({
     total: filtered.length,
     limit: lim,
     offset: off,
-    requests: page,
+    requests: enriched,
+    tmdbConfigured: isTmdbConfigured(),
   });
 });
 
-app.get("/admin/api/requests/:id", requireAdmin, (req, res) => {
+app.get("/admin/api/requests/:id", requireAdmin, async (req, res) => {
   const entry = analytics.requests.find((r) => r.id === req.params.id);
   if (!entry) return res.status(404).json({ error: "Request not found" });
-  res.json(entry);
+
+  let media = entry.media || null;
+  if (!media && (entry.type === "movie" || entry.type === "series")) {
+    media = await enrichRequestMeta(entry);
+    if (media && !media.error) entry.media = media;
+  }
+
+  const { userAgent, ...summary } = entry;
+  res.json({ ...summary, media, tmdbConfigured: isTmdbConfigured() });
 });
 
 app.delete("/admin/api/requests", requireAdmin, (_req, res) => {
@@ -893,4 +931,7 @@ app.listen(PORT, () => {
   console.log("Movie: /movie?imdb=tt0468569");
   console.log("Series: /series?tmdb=93405&season=1&episode=1");
   console.log(`Admin dashboard: http://localhost:${PORT}/admin.html`);
+  if (!isTmdbConfigured()) {
+    console.warn("TMDB_API_KEY not set — admin media details disabled");
+  }
 });

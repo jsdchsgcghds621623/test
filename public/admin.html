@@ -439,6 +439,125 @@
     }
 
     .refresh-info { font-size: .78rem; color: var(--muted); }
+
+    .tmdb-badge {
+      font-size: .7rem;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(1,180,228,.15);
+      color: #5bc0de;
+      border: 1px solid rgba(1,180,228,.35);
+    }
+
+    .media-cell {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      min-width: 200px;
+      max-width: 320px;
+    }
+
+    .media-poster {
+      width: 40px;
+      height: 60px;
+      border-radius: 6px;
+      object-fit: cover;
+      background: var(--surface2);
+      flex-shrink: 0;
+    }
+
+    .media-poster.placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .65rem;
+      color: var(--muted);
+    }
+
+    .media-info { min-width: 0; flex: 1; }
+
+    .media-title {
+      font-weight: 600;
+      font-size: .85rem;
+      line-height: 1.3;
+    }
+
+    .media-sub {
+      font-size: .72rem;
+      color: var(--muted);
+      margin-top: 2px;
+      line-height: 1.35;
+    }
+
+    .media-ids {
+      font-size: .68rem;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      margin-top: 4px;
+    }
+
+    .modal { max-width: 720px; }
+
+    .detail-hero {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 24px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .detail-hero img {
+      width: 120px;
+      height: 180px;
+      object-fit: cover;
+      border-radius: 8px;
+      background: var(--surface2);
+    }
+
+    .detail-hero h3 {
+      font-size: 1.25rem;
+      margin-bottom: 6px;
+    }
+
+    .detail-hero .meta-line {
+      color: var(--muted);
+      font-size: .85rem;
+      margin-bottom: 8px;
+    }
+
+    .detail-hero .overview {
+      font-size: .85rem;
+      color: var(--text);
+      line-height: 1.5;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    .detail-section {
+      margin-bottom: 20px;
+    }
+
+    .detail-section h4 {
+      font-size: .75rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      font-size: .72rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+    }
   </style>
 </head>
 <body>
@@ -460,6 +579,7 @@
       <h1>Stream Resolver <span>Analytics</span></h1>
       <div class="header-actions">
         <div class="live-dot" title="Live polling"></div>
+        <span class="tmdb-badge" id="tmdb-badge" style="display:none;">TMDB</span>
         <span class="refresh-info" id="last-refresh">—</span>
         <button class="ghost" id="refresh-btn">Refresh</button>
         <button class="danger" id="clear-btn">Clear Logs</button>
@@ -498,7 +618,7 @@
           <span class="refresh-info" id="log-count">0 requests</span>
         </div>
         <div class="filters">
-          <input type="search" id="f-search" placeholder="Search imdb, tmdb, filename, IP…" />
+          <input type="search" id="f-search" placeholder="Search title, imdb, tmdb, filename, IP…" />
           <select id="f-type">
             <option value="">All types</option>
             <option value="movie">Movie</option>
@@ -536,7 +656,7 @@
               <tr>
                 <th>Time</th>
                 <th>Type</th>
-                <th>Content</th>
+                <th>Title / Media</th>
                 <th>Route</th>
                 <th>Providers</th>
                 <th>Origin</th>
@@ -566,7 +686,11 @@
         <h2>Request Details</h2>
         <button class="ghost" id="modal-close">Close</button>
       </div>
-      <div class="modal-body"><dl class="detail-grid" id="modal-content"></dl></div>
+      <div class="modal-body" id="modal-body">
+        <div id="modal-hero"></div>
+        <div id="modal-sections"></div>
+        <dl class="detail-grid" id="modal-content"></dl>
+      </div>
     </div>
   </div>
 
@@ -679,6 +803,8 @@
     }
 
     function contentLabel(r) {
+      if (r.media?.displayTitle) return r.media.displayTitle;
+      if (r.media?.title) return r.media.title;
       if (r.type === "movie") return r.filename || r.imdb || "—";
       if (r.type === "series") {
         const ep = `S${r.season}E${r.episode}`;
@@ -688,6 +814,62 @@
         return r.providerName || r.decryptedProvider || "Token decrypt";
       }
       return "—";
+    }
+
+    function renderMediaCell(r) {
+      const title = esc(contentLabel(r));
+      const m = r.media;
+
+      if (r.type === "decrypt" || (!m && r.type !== "movie" && r.type !== "series")) {
+        return `<div class="media-cell"><div class="media-info"><div class="media-title">${title}</div></div></div>`;
+      }
+
+      if (m?.error) {
+        return `<div class="media-cell"><div class="media-info"><div class="media-title">${title}</div><div class="media-sub">TMDB: ${esc(m.error)}</div></div></div>`;
+      }
+
+      const poster = m?.episode?.stillUrl || m?.posterUrl;
+      const posterHtml = poster
+        ? `<img class="media-poster" src="${esc(poster)}" alt="" loading="lazy" />`
+        : `<div class="media-poster placeholder">N/A</div>`;
+
+      const sub = [];
+      if (m?.mediaType === "movie") {
+        if (m.year) sub.push(m.year);
+        if (m.runtime) sub.push(`${m.runtime} min`);
+      } else if (m?.mediaType === "tv") {
+        if (m.episode?.name) sub.push(m.episode.name);
+        else if (r.season != null) sub.push(`S${r.season}E${r.episode}`);
+        if (m.episode?.airDate) sub.push(m.episode.airDate);
+      }
+      if (m?.rating != null) sub.push(`★ ${Number(m.rating).toFixed(1)}`);
+      if (m?.genres?.length) sub.push(m.genres.slice(0, 2).join(", "));
+
+      const ids = [];
+      if (r.imdb || m?.imdbId) ids.push(r.imdb || m.imdbId);
+      if (r.tmdb || m?.tmdbId) ids.push(`TMDB ${r.tmdb || m.tmdbId}`);
+
+      return `
+        <div class="media-cell">
+          ${posterHtml}
+          <div class="media-info">
+            <div class="media-title">${esc(m?.title || title)}</div>
+            ${sub.length ? `<div class="media-sub">${esc(sub.join(" · "))}</div>` : ""}
+            ${ids.length ? `<div class="media-ids">${esc(ids.join(" · "))}</div>` : ""}
+            ${!m ? `<div class="media-sub">Loading TMDB…</div>` : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    function setTmdbBadge(data) {
+      const el = $("#tmdb-badge");
+      if (data?.tmdbConfigured) {
+        el.style.display = "inline-block";
+        el.title = "TMDB metadata enabled";
+      } else {
+        el.style.display = "none";
+      }
     }
 
     function renderStats(data) {
@@ -762,7 +944,6 @@
         const typeBadge = r.type === "movie" ? "badge-movie"
           : r.type === "series" ? "badge-series" : "badge-decrypt";
         const statusBadge = r.status < 400 ? "badge-ok" : "badge-err";
-        const label = esc(contentLabel(r));
         const domain = esc(r.origin?.domain || "direct");
         const providers = (r.providers || (r.decryptedProvider ? [r.decryptedProvider] : []))
           .map((p) => `<span class="provider-tag">${esc(PROVIDER_NAMES[p] || p)}</span>`).join("");
@@ -771,7 +952,7 @@
           <tr class="clickable" data-id="${esc(r.id)}">
             <td class="mono">${esc(fmtTime(r.timestamp))}</td>
             <td><span class="badge ${typeBadge}">${esc(r.type)}</span></td>
-            <td class="truncate" title="${label}">${label}</td>
+            <td>${renderMediaCell(r)}</td>
             <td class="mono">${esc(r.route || "—")}</td>
             <td><div class="provider-tags">${providers || "—"}</div></td>
             <td class="truncate" title="${domain}">${domain}</td>
@@ -814,11 +995,17 @@
 
       try {
         const statsP = api("/admin/api/stats")
-          .then((data) => { renderStats(data); })
+          .then((data) => {
+            renderStats(data);
+            setTmdbBadge(data);
+          })
           .catch((err) => { statsErr = err; });
 
         const requestsP = api(`/admin/api/requests?${buildQuery()}`)
-          .then((data) => { renderTable(data); })
+          .then((data) => {
+            setTmdbBadge(data);
+            renderTable(data);
+          })
           .catch((err) => { requestsErr = err; });
 
         await Promise.all([statsP, requestsP]);
@@ -844,18 +1031,75 @@
       }
     }
 
+    function renderDetailHero(data) {
+      const m = data.media;
+      const hero = $("#modal-hero");
+      const sections = $("#modal-sections");
+
+      if (!m || m.error) {
+        hero.innerHTML = "";
+        sections.innerHTML = m?.error
+          ? `<div class="detail-section"><p class="media-sub">TMDB: ${esc(m.error)}</p></div>`
+          : "";
+        return;
+      }
+
+      const img = m.episode?.stillUrl || m.posterUrl || m.backdropUrl;
+      const meta = [];
+      if (m.mediaType === "movie") {
+        if (m.year) meta.push(m.year);
+        if (m.runtime) meta.push(`${m.runtime} min`);
+      } else {
+        if (m.firstAirDate) meta.push(`First aired ${m.firstAirDate}`);
+        if (m.seasons) meta.push(`${m.seasons} seasons`);
+      }
+      if (m.rating != null) meta.push(`★ ${Number(m.rating).toFixed(1)} (${m.voteCount || 0} votes)`);
+      if (m.status) meta.push(m.status);
+
+      hero.innerHTML = `
+        ${img ? `<img src="${esc(img)}" alt="" />` : ""}
+        <div>
+          <h3>${esc(m.displayTitle || m.title)}</h3>
+          ${m.originalTitle && m.originalTitle !== m.title ? `<div class="meta-line">${esc(m.originalTitle)}</div>` : ""}
+          <div class="meta-line">${esc(meta.join(" · "))}</div>
+          ${m.tagline ? `<div class="meta-line"><em>${esc(m.tagline)}</em></div>` : ""}
+          ${m.overview ? `<p class="overview">${esc(m.overview)}</p>` : ""}
+        </div>
+      `;
+
+      let sectionHtml = "";
+      if (m.genres?.length) {
+        sectionHtml += `<div class="detail-section"><h4>Genres</h4><div class="tag-row">${m.genres.map((g) => `<span class="tag">${esc(g)}</span>`).join("")}</div></div>`;
+      }
+      if (m.mediaType === "tv" && m.episode) {
+        sectionHtml += `<div class="detail-section"><h4>Episode</h4><dl class="detail-grid">
+          <dt>Season</dt><dd>S${esc(data.season)}</dd>
+          <dt>Episode</dt><dd>E${esc(data.episode)}${m.episode.name ? ` — ${esc(m.episode.name)}` : ""}</dd>
+          ${m.episode.airDate ? `<dt>Air date</dt><dd>${esc(m.episode.airDate)}</dd>` : ""}
+          ${m.episode.runtime ? `<dt>Runtime</dt><dd>${esc(m.episode.runtime)} min</dd>` : ""}
+        </dl>${m.episode.overview ? `<p class="overview" style="margin-top:10px">${esc(m.episode.overview)}</p>` : ""}</div>`;
+      }
+      if (m.networks?.length) {
+        sectionHtml += `<div class="detail-section"><h4>Networks</h4><div class="tag-row">${m.networks.map((n) => `<span class="tag">${esc(n)}</span>`).join("")}</div></div>`;
+      }
+      sections.innerHTML = sectionHtml;
+    }
+
     async function showDetail(id) {
       const data = await api(`/admin/api/requests/${encodeURIComponent(id)}`);
+      setTmdbBadge(data);
+      renderDetailHero(data);
+
       const fields = [
-        ["ID", data.id],
+        ["Request ID", data.id],
         ["Timestamp", fmtTime(data.timestamp)],
         ["Type", data.type],
         ["Route", data.method + " " + (data.route || "—")],
         ["Status", data.status],
         ["Duration", data.durationMs + "ms"],
         ["Cached", data.cached ? "Yes" : "No"],
-        ["IMDB", data.imdb],
-        ["TMDB", data.tmdb],
+        ["IMDB", data.imdb || data.media?.imdbId],
+        ["TMDB ID", data.tmdb || data.media?.tmdbId],
         ["Season / Episode", data.season != null ? `S${data.season}E${data.episode}` : null],
         ["Filename", data.filename],
         ["File Size", data.fsize],
