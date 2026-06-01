@@ -558,6 +558,44 @@
       background: var(--surface2);
       border: 1px solid var(--border);
     }
+
+    .security-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 900px) {
+      .security-grid { grid-template-columns: 1fr; }
+    }
+
+    .block-form {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .block-form input { flex: 1; min-width: 140px; }
+
+    button.small {
+      padding: 4px 10px;
+      font-size: .72rem;
+    }
+
+    .ip-blocked {
+      color: var(--red);
+      font-size: .72rem;
+      font-weight: 600;
+    }
+
+    .actions-cell {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    tr.row-blocked { opacity: .55; }
   </style>
 </head>
 <body>
@@ -614,6 +652,55 @@
 
       <div class="panel">
         <div class="panel-header">
+          <h2>IP Security</h2>
+          <span class="refresh-info" id="security-info">—</span>
+        </div>
+        <div class="panel-body">
+          <p class="refresh-info" style="margin-bottom:12px;" id="rate-limit-desc">—</p>
+          <div class="block-form">
+            <input type="text" id="block-ip-input" placeholder="IP address e.g. 45.67.136.14" />
+            <input type="text" id="block-reason-input" placeholder="Reason (optional)" />
+            <button class="danger" id="block-ip-btn">Block IP</button>
+          </div>
+          <div class="security-grid">
+            <div>
+              <h3 style="font-size:.85rem;margin-bottom:10px;color:var(--muted);">Blocked IPs</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>IP</th>
+                      <th>Reason</th>
+                      <th>Since</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="blocks-body"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3 style="font-size:.85rem;margin-bottom:10px;color:var(--muted);">Top IPs (by requests)</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>IP</th>
+                      <th>Requests</th>
+                      <th>Recent hits</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="top-ips-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
           <h2>Request Log</h2>
           <span class="refresh-info" id="log-count">0 requests</span>
         </div>
@@ -636,6 +723,7 @@
             <option value="200">200 OK</option>
             <option value="400">400 Bad</option>
             <option value="403">403 Forbidden</option>
+            <option value="429">429 Rate limit</option>
             <option value="500">500 Error</option>
           </select>
           <select id="f-cached">
@@ -663,6 +751,7 @@
                 <th>Client IP</th>
                 <th>Status</th>
                 <th>Duration</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="requests-body"></tbody>
@@ -936,7 +1025,7 @@
       $("#next-btn").disabled = offset + limit >= total;
 
       if (!rows.length) {
-        $("#requests-body").innerHTML = `<tr><td colspan="9" class="empty-state">No requests match your filters</td></tr>`;
+        $("#requests-body").innerHTML = `<tr><td colspan="10" class="empty-state">No requests match your filters</td></tr>`;
         return;
       }
 
@@ -948,27 +1037,104 @@
         const providers = (r.providers || (r.decryptedProvider ? [r.decryptedProvider] : []))
           .map((p) => `<span class="provider-tag">${esc(PROVIDER_NAMES[p] || p)}</span>`).join("");
 
+        const ip = r.clientIp || "";
+        const blocked = r.ipBlocked;
+        const blockBtn = ip && !blocked
+          ? `<button type="button" class="danger small btn-block-ip" data-ip="${esc(ip)}">Block</button>`
+          : blocked
+            ? `<span class="ip-blocked">Blocked</span>`
+            : "";
+
         return `
-          <tr class="clickable" data-id="${esc(r.id)}">
+          <tr class="clickable${blocked ? " row-blocked" : ""}" data-id="${esc(r.id)}">
             <td class="mono">${esc(fmtTime(r.timestamp))}</td>
             <td><span class="badge ${typeBadge}">${esc(r.type)}</span></td>
             <td>${renderMediaCell(r)}</td>
             <td class="mono">${esc(r.route || "—")}</td>
             <td><div class="provider-tags">${providers || "—"}</div></td>
             <td class="truncate" title="${domain}">${domain}</td>
-            <td class="mono">${esc(r.clientIp || "—")}</td>
+            <td class="mono">${esc(ip || "—")}</td>
             <td>
               <span class="badge ${statusBadge}">${esc(r.status)}</span>
               ${r.cached ? '<span class="badge badge-cache">CACHE</span>' : ""}
+              ${r.securityBlock ? `<span class="badge badge-err">${esc(r.securityBlock)}</span>` : ""}
             </td>
             <td class="mono">${esc(r.durationMs)}ms</td>
+            <td class="actions-cell" data-no-row-click="1">${blockBtn}</td>
           </tr>
         `;
       }).join("");
 
       document.querySelectorAll("#requests-body tr.clickable").forEach((tr) => {
-        tr.addEventListener("click", () => showDetail(tr.dataset.id));
+        tr.addEventListener("click", (e) => {
+          if (e.target.closest("[data-no-row-click]")) return;
+          showDetail(tr.dataset.id);
+        });
       });
+    }
+
+    function renderSecurity(blocksData, topData) {
+      const cfg = blocksData?.config || topData?.config || {};
+      $("#security-info").textContent = `${blocksData?.blocks?.length ?? 0} blocked`;
+      $("#rate-limit-desc").textContent =
+        `Rate limit: ${cfg.rateLimitMax ?? "—"} requests / ${cfg.rateLimitWindowSec ?? "—"}s per IP · Auto-block after ${cfg.autoBlockMax ?? "—"} in ${cfg.autoBlockWindowSec ?? "—"}s`;
+
+      const blocks = blocksData?.blocks || [];
+      $("#blocks-body").innerHTML = blocks.length
+        ? blocks.map((b) => `
+          <tr>
+            <td class="mono">${esc(b.ip)}</td>
+            <td class="truncate" title="${esc(b.reason)}">${esc(b.reason)}</td>
+            <td class="mono">${esc(fmtTime(b.blockedAt))}</td>
+            <td><button type="button" class="ghost small btn-unblock-ip" data-ip="${esc(b.ip)}">Unblock</button></td>
+          </tr>
+        `).join("")
+        : `<tr><td colspan="4" class="empty-state">No blocked IPs</td></tr>`;
+
+      const top = topData?.topIps || [];
+      $("#top-ips-body").innerHTML = top.length
+        ? top.map((row) => `
+          <tr>
+            <td class="mono">${esc(row.ip)}</td>
+            <td>${row.requestCount}</td>
+            <td>${row.recentHits ?? "—"}</td>
+            <td>${row.blocked
+              ? `<span class="ip-blocked">Blocked</span>`
+              : `<button type="button" class="danger small btn-block-ip" data-ip="${esc(row.ip)}">Block</button>`}
+            </td>
+          </tr>
+        `).join("")
+        : `<tr><td colspan="4" class="empty-state">No traffic yet</td></tr>`;
+    }
+
+    async function loadSecurity() {
+      try {
+        const [blocks, top] = await Promise.all([
+          api("/admin/api/blocks"),
+          api("/admin/api/security/top-ips?limit=20"),
+        ]);
+        renderSecurity(blocks, top);
+      } catch (err) {
+        console.error("Security panel:", err);
+      }
+    }
+
+    async function blockIpAddress(ip, reason) {
+      if (!ip) return;
+      const res = await fetch("/admin/api/blocks", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ ip, reason }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alert(body.error || "Failed to block IP");
+        return;
+      }
+      $("#block-ip-input").value = "";
+      $("#block-reason-input").value = "";
+      await loadSecurity();
+      await refresh();
     }
 
     function buildQuery() {
@@ -1008,7 +1174,9 @@
           })
           .catch((err) => { requestsErr = err; });
 
-        await Promise.all([statsP, requestsP]);
+        const securityP = loadSecurity().catch((err) => console.error(err));
+
+        await Promise.all([statsP, requestsP, securityP]);
 
         if (statsErr && requestsErr) {
           throw statsErr;
@@ -1133,6 +1301,33 @@
     $("#logout-btn").addEventListener("click", logout);
     $("#refresh-btn").addEventListener("click", refresh);
     $("#clear-btn").addEventListener("click", clearLogs);
+    $("#block-ip-btn").addEventListener("click", () => {
+      blockIpAddress(
+        $("#block-ip-input").value.trim(),
+        $("#block-reason-input").value.trim() || "Blocked by admin"
+      );
+    });
+
+    document.body.addEventListener("click", (e) => {
+      const blockBtn = e.target.closest(".btn-block-ip");
+      if (blockBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        blockIpAddress(blockBtn.dataset.ip, "Blocked from admin panel");
+        return;
+      }
+      const unblockBtn = e.target.closest(".btn-unblock-ip");
+      if (unblockBtn) {
+        e.preventDefault();
+        fetch(`/admin/api/blocks/${encodeURIComponent(unblockBtn.dataset.ip)}`, {
+          method: "DELETE",
+          headers: headers(),
+        }).then(() => {
+          loadSecurity();
+          refresh();
+        });
+      }
+    });
     $("#modal-close").addEventListener("click", () => $("#modal").classList.remove("open"));
     $("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) $("#modal").classList.remove("open"); });
 

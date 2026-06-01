@@ -9,6 +9,17 @@ import {
   enrichRequestsBatch,
   isTmdbConfigured,
 } from "./tmdb.js";
+import {
+  initSecurity,
+  checkStreamAccess,
+  blockIp,
+  unblockIp,
+  listBlocked,
+  isBlocked,
+  getSecurityConfig,
+  getIpHitCount,
+  normalizeIp,
+} from "./security.js";
 
 dotenv.config();
 
@@ -474,6 +485,72 @@ function buildStreamUrls(mresult) {
 }
 
 /* ─────────────────────────────
+   ANTI-SCRAPE / IP BLOCK
+───────────────────────────── */
+
+function streamProtect(req, res, next) {
+  const protectedPaths = ["/movie", "/series", "/decrypt"];
+  if (!protectedPaths.includes(req.path)) return next();
+
+  const clientIp = getClientIp(req);
+  const check = checkStreamAccess(clientIp);
+
+  if (!check.ok) {
+    logRequest({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      route: req.path,
+      method: req.method,
+      type:
+        req.path === "/decrypt"
+          ? "decrypt"
+          : req.path === "/series"
+            ? "series"
+            : "movie",
+      status: check.status,
+      durationMs: 0,
+      cached: false,
+      error: check.error,
+      origin: getOriginInfo(req),
+      clientIp,
+      userAgent: req.headers["user-agent"] || "",
+      securityBlock: check.code,
+    });
+
+    if (check.retryAfterSec) {
+      res.set("Retry-After", String(check.retryAfterSec));
+    }
+    return res.status(check.status).json({
+      error: check.error,
+      code: check.code,
+    });
+  }
+
+  next();
+}
+
+app.use(streamProtect);
+
+function getTopIps(limit = 25) {
+  const counts = new Map();
+  for (const r of analytics.requests) {
+    const ip = normalizeIp(r.clientIp);
+    if (!ip) continue;
+    counts.set(ip, (counts.get(ip) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([ip, requestCount]) => ({
+      ip,
+      requestCount,
+      blocked: isBlocked(ip),
+      recentHits: getIpHitCount(ip),
+    }));
+}
+
+/* ─────────────────────────────
    ROUTES
 ───────────────────────────── */
 
@@ -802,6 +879,37 @@ app.get("/admin/api/stats", requireAdmin, (_req, res) => {
     hourly: analytics.hourly,
     providerNames: PROVIDER_NAMES,
     tmdbConfigured: isTmdbConfigured(),
+    security: getSecurityConfig(),
+  });
+});
+
+app.get("/admin/api/blocks", requireAdmin, (_req, res) => {
+  res.json({
+    blocks: listBlocked(),
+    config: getSecurityConfig(),
+  });
+});
+
+app.post("/admin/api/blocks", requireAdmin, (req, res) => {
+  const { ip, reason } = req.body || {};
+  const record = blockIp(ip, reason || "Blocked by admin", "manual");
+  if (!record) {
+    return res.status(400).json({ error: "Valid IP address required" });
+  }
+  res.json({ ok: true, block: record });
+});
+
+app.delete("/admin/api/blocks/:ip", requireAdmin, (req, res) => {
+  const ok = unblockIp(decodeURIComponent(req.params.ip));
+  if (!ok) return res.status(404).json({ error: "IP not in blocklist" });
+  res.json({ ok: true });
+});
+
+app.get("/admin/api/security/top-ips", requireAdmin, (req, res) => {
+  const lim = Math.min(parseInt(req.query.limit, 10) || 25, 100);
+  res.json({
+    topIps: getTopIps(lim),
+    config: getSecurityConfig(),
   });
 });
 
@@ -862,6 +970,7 @@ app.get("/admin/api/requests", requireAdmin, async (req, res) => {
       const stored = analytics.requests.find((r) => r.id === row.id);
       if (stored) stored.media = row.media;
     }
+    row.ipBlocked = isBlocked(row.clientIp);
   }
 
   res.json({
@@ -870,6 +979,7 @@ app.get("/admin/api/requests", requireAdmin, async (req, res) => {
     offset: off,
     requests: enriched,
     tmdbConfigured: isTmdbConfigured(),
+    security: getSecurityConfig(),
   });
 });
 
@@ -926,12 +1036,21 @@ function formatUptime(ms) {
    START SERVER
 ───────────────────────────── */
 
-app.listen(PORT, () => {
-  console.log(`Server running: http://localhost:${PORT}`);
-  console.log("Movie: /movie?imdb=tt0468569");
-  console.log("Series: /series?tmdb=93405&season=1&episode=1");
-  console.log(`Admin dashboard: http://localhost:${PORT}/admin.html`);
-  if (!isTmdbConfigured()) {
-    console.warn("TMDB_API_KEY not set — admin media details disabled");
-  }
+async function start() {
+  await initSecurity(__dirname);
+
+  app.listen(PORT, () => {
+    console.log(`Server running: http://localhost:${PORT}`);
+    console.log("Movie: /movie?imdb=tt0468569");
+    console.log("Series: /series?tmdb=93405&season=1&episode=1");
+    console.log(`Admin dashboard: http://localhost:${PORT}/admin.html`);
+    if (!isTmdbConfigured()) {
+      console.warn("TMDB_API_KEY not set — admin media details disabled");
+    }
+  });
+}
+
+start().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
 });
